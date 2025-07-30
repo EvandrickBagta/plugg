@@ -1,47 +1,70 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Html5Qrcode, Html5QrcodeScannerState } from "html5-qrcode";
 
-import PdfWorker from "../workers/pdf.worker.js?worker";
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
-
-GlobalWorkerOptions.workerPort = new PdfWorker();
-
-const QRScanner: React.FC = () => {
+const TempScanner: React.FC = () => {
   const [result, setResult] = useState<string>("No result");
   const [analysis, setAnalysis] = useState<string>("Waiting for scan...");
   const scannerRef = useRef<HTMLDivElement | null>(null);
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
-  const scannedSet = useRef(new Set<string>());
+  const scannedSet = useRef(new Set<string>()); // to prevent duplicate scans
 
+  // Analyze the scanned link with ChatGPT (OpenAI API)
   const analyzeLink = async (url: string) => {
     try {
-      const proxyUrl = "https://corsproxy.io/?" + encodeURIComponent(url);
-      const response = await fetch(proxyUrl);
-
-      if (!response.ok) {
-        console.error("Failed to fetch PDF:", await response.text());
-        setAnalysis("Failed to fetch PDF.");
+      // Step 1: Fetch the contents of the COA page
+      const coaResponse = await fetch(url);
+      if (!coaResponse.ok) {
+        console.error("Failed to fetch COA:", await coaResponse.text());
+        setAnalysis("Failed to fetch the product details from the URL.");
         return;
       }
 
-      const blob = await response.blob();
-      const arrayBuffer = await blob.arrayBuffer();
-      const pdf = await getDocument({ data: arrayBuffer }).promise;
+      // Step 2: Extract the page text (or use .json() if it's a JSON API)
+      const coaText = await coaResponse.text();
 
-      let extractedText = "";
-      const maxPages = Math.min(pdf.numPages, 5);
+      // Step 3: Send the content to OpenAI for analysis
+      const openaiResponse = await fetch(
+        "https://api.openai.com/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${import.meta.env.VITE_OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: "gpt-4.1-mini",
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You are a budtender who explains cannabis products to customers.",
+              },
+              {
+                role: "user",
+                content: `Here is the content of a COA (Certificate of Analysis) page for a cannabis product. Please briefly summarize what the product is and any important information:\n\n${coaText.slice(
+                  0,
+                  5000
+                )}`, // truncate to avoid token overflow
+              },
+            ],
+          }),
+        }
+      );
 
-      for (let i = 1; i <= maxPages; i++) {
-        const page = await pdf.getPage(i);
-        const content = await page.getTextContent();
-        const pageText = content.items.map((item: any) => item.str).join(" ");
-        extractedText += `--- Page ${i} ---\n${pageText}\n\n`;
+      if (!openaiResponse.ok) {
+        const error = await openaiResponse.text();
+        console.error("OpenAI API Error:", error);
+        setAnalysis("OpenAI API request failed.");
+        return;
       }
 
-      setAnalysis(extractedText.slice(0, 5000));
-    } catch (err) {
-      console.error("Error analyzing PDF:", err);
-      setAnalysis("An error occurred while reading the PDF.");
+      const data = await openaiResponse.json();
+      const reply =
+        data.choices?.[0]?.message?.content || "No response from ChatGPT.";
+      setAnalysis(reply);
+    } catch (error) {
+      console.error("Error analyzing link:", error);
+      setAnalysis("An error occurred while analyzing the URL.");
     }
   };
 
@@ -59,7 +82,7 @@ const QRScanner: React.FC = () => {
 
       await analyzeLink(decodedText);
 
-      // Reset scan after 5 seconds
+      // Allow scanning again after 5 seconds
       setTimeout(() => {
         scannedSet.current.delete(decodedText);
       }, 5000);
@@ -110,7 +133,7 @@ const QRScanner: React.FC = () => {
           </a>
         </p>
 
-        <h3>Extracted PDF Text</h3>
+        <h3>ChatGPT Analysis</h3>
         <div
           style={{
             whiteSpace: "pre-wrap",
@@ -128,4 +151,4 @@ const QRScanner: React.FC = () => {
   );
 };
 
-export default QRScanner;
+export default TempScanner;
