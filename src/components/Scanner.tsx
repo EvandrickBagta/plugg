@@ -1,28 +1,50 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Html5Qrcode, Html5QrcodeScannerState } from "html5-qrcode";
 
-const TempScanner: React.FC = () => {
+import PdfWorker from "../workers/pdf.worker.js?worker";
+import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
+
+GlobalWorkerOptions.workerPort = new PdfWorker();
+
+const QRScanner: React.FC = () => {
   const [result, setResult] = useState<string>("No result");
   const [analysis, setAnalysis] = useState<string>("Waiting for scan...");
   const scannerRef = useRef<HTMLDivElement | null>(null);
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
-  const scannedSet = useRef(new Set<string>()); // to prevent duplicate scans
+  const scannedSet = useRef(new Set<string>());
+  const [extractedText, setExtractedText] = useState<string>(
+    "No text extracted yet."
+  );
 
-  // Analyze the scanned link with ChatGPT (OpenAI API)
   const analyzeLink = async (url: string) => {
     try {
-      // Step 1: Fetch the contents of the COA page
-      const coaResponse = await fetch(url);
-      if (!coaResponse.ok) {
-        console.error("Failed to fetch COA:", await coaResponse.text());
-        setAnalysis("Failed to fetch the product details from the URL.");
+      const proxyUrl = "https://corsproxy.io/?" + encodeURIComponent(url);
+      const response = await fetch(proxyUrl);
+
+      if (!response.ok) {
+        console.error("Failed to fetch PDF:", await response.text());
+        setAnalysis("Failed to fetch PDF.");
         return;
       }
 
-      // Step 2: Extract the page text (or use .json() if it's a JSON API)
-      const coaText = await coaResponse.text();
+      const blob = await response.blob();
+      const arrayBuffer = await blob.arrayBuffer();
+      const pdf = await getDocument({ data: arrayBuffer }).promise;
 
-      // Step 3: Send the content to OpenAI for analysis
+      let fullText = "";
+      const maxPages = Math.min(pdf.numPages, 5);
+
+      for (let i = 1; i <= maxPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        const pageText = content.items.map((item: any) => item.str).join(" ");
+        fullText += `--- Page ${i} ---\n${pageText}\n\n`;
+      }
+
+      // Save raw extracted text
+      setExtractedText(fullText.slice(0, 5000));
+
+      // Send to OpenAI for analysis
       const openaiResponse = await fetch(
         "https://api.openai.com/v1/chat/completions",
         {
@@ -41,10 +63,10 @@ const TempScanner: React.FC = () => {
               },
               {
                 role: "user",
-                content: `Here is the content of a COA (Certificate of Analysis) page for a cannabis product. Please briefly summarize what the product is and any important information:\n\n${coaText.slice(
+                content: `Here is the content of a Certificate of Analysis (COA) for a cannabis product. Please summarize the product and highlight important details:\n\n${fullText.slice(
                   0,
                   5000
-                )}`, // truncate to avoid token overflow
+                )}`,
               },
             ],
           }),
@@ -52,9 +74,9 @@ const TempScanner: React.FC = () => {
       );
 
       if (!openaiResponse.ok) {
-        const error = await openaiResponse.text();
-        console.error("OpenAI API Error:", error);
-        setAnalysis("OpenAI API request failed.");
+        const errorText = await openaiResponse.text();
+        console.error("OpenAI API error:", errorText);
+        setAnalysis("Failed to analyze text with ChatGPT.");
         return;
       }
 
@@ -62,9 +84,9 @@ const TempScanner: React.FC = () => {
       const reply =
         data.choices?.[0]?.message?.content || "No response from ChatGPT.";
       setAnalysis(reply);
-    } catch (error) {
-      console.error("Error analyzing link:", error);
-      setAnalysis("An error occurred while analyzing the URL.");
+    } catch (err) {
+      console.error("Error analyzing PDF:", err);
+      setAnalysis("An error occurred during analysis.");
     }
   };
 
@@ -82,7 +104,7 @@ const TempScanner: React.FC = () => {
 
       await analyzeLink(decodedText);
 
-      // Allow scanning again after 5 seconds
+      // Reset scan after 5 seconds
       setTimeout(() => {
         scannedSet.current.delete(decodedText);
       }, 5000);
@@ -133,22 +155,41 @@ const TempScanner: React.FC = () => {
           </a>
         </p>
 
-        <h3>ChatGPT Analysis</h3>
+        <h3>Extracted Text & ChatGPT Analysis</h3>
         <div
           style={{
-            whiteSpace: "pre-wrap",
-            background: "#f6f6f6",
-            padding: "10px",
-            borderRadius: "5px",
-            maxWidth: "600px",
-            margin: "auto",
+            display: "flex",
+            gap: "20px",
+            justifyContent: "center",
+            flexWrap: "wrap",
           }}
         >
-          {analysis}
+          <div
+            style={{
+              whiteSpace: "pre-wrap",
+              background: "#f6f6f6",
+              padding: "10px",
+              borderRadius: "5px",
+              width: "280px",
+            }}
+          >
+            {extractedText}
+          </div>
+          <div
+            style={{
+              whiteSpace: "pre-wrap",
+              background: "#f6f6f6",
+              padding: "10px",
+              borderRadius: "5px",
+              width: "280px",
+            }}
+          >
+            {analysis}
+          </div>
         </div>
       </div>
     </div>
   );
 };
 
-export default TempScanner;
+export default QRScanner;
