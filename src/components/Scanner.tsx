@@ -16,6 +16,10 @@ const QRScanner: React.FC = () => {
     "No text extracted yet."
   );
 
+  const [activeTab, setActiveTab] = useState<"extracted" | "analysis">(
+    "analysis"
+  );
+
   const analyzeLink = async (url: string) => {
     try {
       const proxyUrl = "https://corsproxy.io/?" + encodeURIComponent(url);
@@ -44,6 +48,17 @@ const QRScanner: React.FC = () => {
       // Save raw extracted text
       setExtractedText(fullText.slice(0, 5000));
 
+      // Fetch prompt template from public folder
+      const structure = await fetch("/prompt-template.txt").then((res) =>
+        res.text()
+      );
+
+      // Compose final prompt with the template
+      const prompt = `Analyze the following COA and summarize it in the structure below. Keep the tone casual but informative — like explaining to a smart friend. Use plain English where possible and include emojis sparingly to enhance readability (not overload it). Be concise, but thorough.\n\n${fullText.slice(
+        0,
+        5000
+      )}\n\n${structure}`;
+
       // Send to OpenAI for analysis
       const openaiResponse = await fetch(
         "https://api.openai.com/v1/chat/completions",
@@ -63,12 +78,11 @@ const QRScanner: React.FC = () => {
               },
               {
                 role: "user",
-                content: `Here is the content of a Certificate of Analysis (COA) for a cannabis product. Please summarize the product and highlight important details:\n\n${fullText.slice(
-                  0,
-                  5000
-                )}`,
+                content: prompt,
               },
             ],
+            temperature: 0.7,
+            max_tokens: 1000,
           }),
         }
       );
@@ -155,45 +169,83 @@ const QRScanner: React.FC = () => {
           </a>
         </p>
 
+        {/* Tabs */}
         <div
           style={{
             display: "flex",
-            gap: "40px",
             justifyContent: "center",
-            flexWrap: "wrap",
-            alignItems: "flex-start",
-            marginTop: "30px",
+            gap: "10px",
+            marginBottom: "20px",
           }}
         >
-          <div style={{ width: "320px" }}>
-            <h3>Extracted Text</h3>
-            <div
-              style={{
-                whiteSpace: "pre-wrap",
-                background: "#f6f6f6",
-                padding: "10px",
-                borderRadius: "5px",
-                minHeight: "120px",
-              }}
-            >
-              {extractedText}
-            </div>
-          </div>
-          <div style={{ width: "320px" }}>
-            <h3>ChatGPT Analysis</h3>
-            <div
-              style={{
-                whiteSpace: "pre-wrap",
-                background: "#f6f6f6",
-                padding: "10px",
-                borderRadius: "5px",
-                minHeight: "120px",
-              }}
-            >
-              {analysis}
-            </div>
-          </div>
+          <button
+            onClick={() => setActiveTab("extracted")}
+            style={{
+              padding: "8px 16px",
+              cursor: "pointer",
+              borderBottom:
+                activeTab === "extracted" ? "3px solid #007bff" : "none",
+              fontWeight: activeTab === "extracted" ? "bold" : "normal",
+              background: "none",
+              border: "none",
+            }}
+          >
+            Extracted Text
+          </button>
+          <button
+            onClick={() => setActiveTab("analysis")}
+            style={{
+              padding: "8px 16px",
+              cursor: "pointer",
+              borderBottom:
+                activeTab === "analysis" ? "3px solid #007bff" : "none",
+              fontWeight: activeTab === "analysis" ? "bold" : "normal",
+              background: "none",
+              border: "none",
+            }}
+          >
+            ChatGPT Analysis
+          </button>
         </div>
+
+        {/* Tab Content */}
+        {activeTab === "extracted" && (
+          <div
+            style={{
+              whiteSpace: "pre-wrap",
+              background: "#f6f6f6",
+              padding: "10px",
+              borderRadius: "5px",
+              minHeight: "120px",
+              maxHeight: "400px",
+              overflowY: "auto",
+              textAlign: "left",
+              width: "500px",
+              margin: "0 auto",
+            }}
+          >
+            {extractedText}
+          </div>
+        )}
+
+        {activeTab === "analysis" && (
+          <div
+            style={{
+              whiteSpace: "pre-wrap",
+              background: "#f6f6f6",
+              padding: "10px",
+              borderRadius: "5px",
+              minHeight: "120px",
+              maxHeight: "400px",
+              overflowY: "auto",
+              textAlign: "left",
+              width: "500px",
+              margin: "0 auto",
+            }}
+          >
+            {analysis}
+          </div>
+        )}
       </div>
     </div>
   );
