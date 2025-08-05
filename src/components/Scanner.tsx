@@ -155,36 +155,43 @@ const QRScanner: React.FC = () => {
           </a>
         </p>
 
-        <h3>Extracted Text & ChatGPT Analysis</h3>
         <div
           style={{
             display: "flex",
-            gap: "20px",
+            gap: "40px",
             justifyContent: "center",
             flexWrap: "wrap",
+            alignItems: "flex-start",
+            marginTop: "30px",
           }}
         >
-          <div
-            style={{
-              whiteSpace: "pre-wrap",
-              background: "#f6f6f6",
-              padding: "10px",
-              borderRadius: "5px",
-              width: "280px",
-            }}
-          >
-            {extractedText}
+          <div style={{ width: "320px" }}>
+            <h3>Extracted Text</h3>
+            <div
+              style={{
+                whiteSpace: "pre-wrap",
+                background: "#f6f6f6",
+                padding: "10px",
+                borderRadius: "5px",
+                minHeight: "120px",
+              }}
+            >
+              {extractedText}
+            </div>
           </div>
-          <div
-            style={{
-              whiteSpace: "pre-wrap",
-              background: "#f6f6f6",
-              padding: "10px",
-              borderRadius: "5px",
-              width: "280px",
-            }}
-          >
-            {analysis}
+          <div style={{ width: "320px" }}>
+            <h3>ChatGPT Analysis</h3>
+            <div
+              style={{
+                whiteSpace: "pre-wrap",
+                background: "#f6f6f6",
+                padding: "10px",
+                borderRadius: "5px",
+                minHeight: "120px",
+              }}
+            >
+              {analysis}
+            </div>
           </div>
         </div>
       </div>
