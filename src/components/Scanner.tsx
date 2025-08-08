@@ -1,33 +1,61 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Html5Qrcode, Html5QrcodeScannerState } from "html5-qrcode";
-
 import PdfWorker from "../workers/pdf.worker.js?worker";
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
+import { ScanHistoryItem } from "./ScanHistory";
+import ReactMarkdown from "react-markdown";
 
 GlobalWorkerOptions.workerPort = new PdfWorker();
 
-const QRScanner: React.FC = () => {
+interface QRScannerProps {
+  selectedScan: ScanHistoryItem | null;
+  onClearSelectedScan: () => void;
+}
+
+const QRScanner: React.FC<QRScannerProps> = ({
+  selectedScan,
+  onClearSelectedScan,
+}) => {
   const [result, setResult] = useState<string>("No result");
   const [analysis, setAnalysis] = useState<string>("Waiting for scan...");
-  const scannerRef = useRef<HTMLDivElement | null>(null);
-  const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
-  const scannedSet = useRef(new Set<string>());
   const [extractedText, setExtractedText] = useState<string>(
     "No text extracted yet."
   );
-
   const [activeTab, setActiveTab] = useState<"extracted" | "analysis">(
     "analysis"
   );
+  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [showMarkdown, setShowMarkdown] = useState<boolean>(true);
 
-  const analyzeLink = async (url: string) => {
+  const scannerRef = useRef<HTMLDivElement | null>(null);
+  const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
+  const scannedSet = useRef(new Set<string>());
+
+  // Save scan to localStorage and notify ScanHistory
+  const saveToHistory = (
+    url: string,
+    extractedText: string,
+    analysis: string
+  ) => {
+    const stored = localStorage.getItem("scanHistoryV2");
+    let history: ScanHistoryItem[] = stored ? JSON.parse(stored) : [];
+    // Remove duplicates
+    history = history.filter((item) => item.url !== url);
+    history.unshift({ url, extractedText, analysis });
+    localStorage.setItem("scanHistoryV2", JSON.stringify(history));
+    window.dispatchEvent(new Event("scanHistoryUpdated"));
+  };
+
+  // Extract text from PDF
+  const extractTextFromPdf = async (url: string) => {
     try {
       const proxyUrl = "https://corsproxy.io/?" + encodeURIComponent(url);
       const response = await fetch(proxyUrl);
 
       if (!response.ok) {
-        console.error("Failed to fetch PDF:", await response.text());
-        setAnalysis("Failed to fetch PDF.");
+        setExtractedText("Failed to fetch PDF.");
+        setAnalysis("No analysis available.");
+        saveToHistory(url, "Failed to fetch PDF.", "No analysis available.");
         return;
       }
 
@@ -45,21 +73,30 @@ const QRScanner: React.FC = () => {
         fullText += `--- Page ${i} ---\n${pageText}\n\n`;
       }
 
-      // Save raw extracted text
-      setExtractedText(fullText.slice(0, 5000));
+      const text = fullText.slice(0, 5000);
+      setExtractedText(text);
+      setAnalysis("Scan complete. Ready to analyze.");
+      saveToHistory(url, text, "Scan complete. Ready to analyze.");
+    } catch (err) {
+      setExtractedText("Error extracting text.");
+      setAnalysis("No analysis available.");
+      saveToHistory(url, "Error extracting text.", "No analysis available.");
+    }
+  };
 
-      // Fetch prompt template from public folder
+  // Run GPT analysis
+  const runAnalysisFromExtractedText = async () => {
+    try {
+      setIsAnalyzing(true);
+      setAnalysis("Analyzing...");
+      setActiveTab("analysis");
+
       const structure = await fetch("/prompt-template.txt").then((res) =>
         res.text()
       );
 
-      // Compose final prompt with the template
-      const prompt = `Analyze the following COA and summarize it in the structure below. Keep the tone casual but informative — like explaining to a smart friend. Use plain English where possible and include emojis sparingly to enhance readability (not overload it). Be concise, but thorough.\n\n${fullText.slice(
-        0,
-        5000
-      )}\n\n${structure}`;
+      const prompt = `${structure}\n\n${extractedText}`;
 
-      // Send to OpenAI for analysis
       const openaiResponse = await fetch(
         "https://api.openai.com/v1/chat/completions",
         {
@@ -74,7 +111,7 @@ const QRScanner: React.FC = () => {
               {
                 role: "system",
                 content:
-                  "You are a budtender who explains cannabis products to customers.",
+                  "You are a chatbot that helps budtenders explain cannabis products to customers.",
               },
               {
                 role: "user",
@@ -82,15 +119,18 @@ const QRScanner: React.FC = () => {
               },
             ],
             temperature: 0.7,
-            max_tokens: 1000,
+            max_tokens: 10000,
           }),
         }
       );
 
       if (!openaiResponse.ok) {
-        const errorText = await openaiResponse.text();
-        console.error("OpenAI API error:", errorText);
         setAnalysis("Failed to analyze text with ChatGPT.");
+        saveToHistory(
+          result,
+          extractedText,
+          "Failed to analyze text with ChatGPT."
+        );
         return;
       }
 
@@ -98,12 +138,20 @@ const QRScanner: React.FC = () => {
       const reply =
         data.choices?.[0]?.message?.content || "No response from ChatGPT.";
       setAnalysis(reply);
+      saveToHistory(result, extractedText, reply);
     } catch (err) {
-      console.error("Error analyzing PDF:", err);
       setAnalysis("An error occurred during analysis.");
+      saveToHistory(
+        result,
+        extractedText,
+        "An error occurred during analysis."
+      );
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
+  // QR scanning logic
   useEffect(() => {
     if (!scannerRef.current) return;
 
@@ -114,11 +162,10 @@ const QRScanner: React.FC = () => {
       scannedSet.current.add(decodedText);
 
       setResult(decodedText);
-      setAnalysis("Analyzing...");
+      setAnalysis("Extracting text...");
+      setActiveTab("extracted");
+      extractTextFromPdf(decodedText);
 
-      await analyzeLink(decodedText);
-
-      // Reset scan after 5 seconds
       setTimeout(() => {
         scannedSet.current.delete(decodedText);
       }, 5000);
@@ -152,6 +199,39 @@ const QRScanner: React.FC = () => {
     };
   }, []);
 
+  // When a scan is selected from history, update the display
+  useEffect(() => {
+    if (selectedScan) {
+      setResult(selectedScan.url);
+      setExtractedText(selectedScan.extractedText);
+      setAnalysis(selectedScan.analysis);
+      setActiveTab("extracted");
+      onClearSelectedScan();
+    }
+    // eslint-disable-next-line
+  }, [selectedScan]);
+
+  // Utility to clean up line breaks for Markdown
+  function formatAnalysis(text: string) {
+    // Normalize line endings
+    let cleaned = text.replace(/\r\n/g, "\n");
+
+    // Remove blank lines after Markdown headers (##, #, or **Header:**)
+    // Handles both "**Header:**\n\nContent" and "# Header\n\nContent"
+    cleaned = cleaned.replace(
+      /(^|\n)((\s*(\#{1,6}\s.*|(\*\*.+\*\*:)))\n+)([^\n])/g,
+      (_, p1, p2, p3, p4, p5, p6) => `${p1}${p3}\n${p6}`
+    );
+
+    // Replace 3+ line breaks with 2 (Markdown paragraph)
+    cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
+    // Replace 2+ line breaks with 2 (Markdown paragraph)
+    cleaned = cleaned.replace(/\n{2,}/g, "\n\n");
+    // Trim leading/trailing whitespace
+    cleaned = cleaned.trim();
+    return cleaned;
+  }
+
   return (
     <div style={{ textAlign: "center", marginTop: "40px" }}>
       <h2>The Plugg</h2>
@@ -161,91 +241,129 @@ const QRScanner: React.FC = () => {
         style={{ width: 300, margin: "auto" }}
       />
 
-      <div style={{ marginTop: "20px" }}>
-        <p>
-          <strong>Last Scanned URL:</strong>{" "}
-          <a href={result} target="_blank" rel="noopener noreferrer">
-            {result}
-          </a>
-        </p>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "flex-start",
+          gap: "40px",
+          marginTop: "30px",
+          flexWrap: "wrap",
+        }}
+      >
+        {/* Main Content */}
+        <div>
+          <p>
+            <strong>Last Scanned URL:</strong>{" "}
+            <a href={result} target="_blank" rel="noopener noreferrer">
+              {result}
+            </a>
+          </p>
 
-        {/* Tabs */}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "center",
-            gap: "10px",
-            marginBottom: "20px",
-          }}
-        >
-          <button
-            onClick={() => setActiveTab("extracted")}
+          {result !== "No result" && (
+            <button
+              onClick={runAnalysisFromExtractedText}
+              disabled={isAnalyzing}
+              style={{
+                marginTop: "10px",
+                padding: "8px 16px",
+                fontSize: "16px",
+                cursor: isAnalyzing ? "not-allowed" : "pointer",
+                opacity: isAnalyzing ? 0.6 : 1,
+              }}
+            >
+              {isAnalyzing ? "Analyzing..." : "Run Analysis"}
+            </button>
+          )}
+
+          {/* Tabs */}
+          <div
             style={{
-              padding: "8px 16px",
-              cursor: "pointer",
-              borderBottom:
-                activeTab === "extracted" ? "3px solid #007bff" : "none",
-              fontWeight: activeTab === "extracted" ? "bold" : "normal",
-              background: "none",
-              border: "none",
+              display: "flex",
+              justifyContent: "center",
+              gap: "10px",
+              marginBottom: "20px",
+              marginTop: "20px",
             }}
           >
-            Extracted Text
-          </button>
-          <button
-            onClick={() => setActiveTab("analysis")}
+            <button
+              onClick={() => setActiveTab("extracted")}
+              style={{
+                padding: "8px 16px",
+                cursor: "pointer",
+                borderBottom:
+                  activeTab === "extracted" ? "3px solid #007bff" : "none",
+                fontWeight: activeTab === "extracted" ? "bold" : "normal",
+                background: "none",
+                border: "none",
+              }}
+            >
+              Extracted Text
+            </button>
+            <button
+              onClick={() => setActiveTab("analysis")}
+              style={{
+                padding: "8px 16px",
+                cursor: "pointer",
+                borderBottom:
+                  activeTab === "analysis" ? "3px solid #007bff" : "none",
+                fontWeight: activeTab === "analysis" ? "bold" : "normal",
+                background: "none",
+                border: "none",
+              }}
+            >
+              ChatGPT Analysis
+            </button>
+          </div>
+
+          <div
             style={{
-              padding: "8px 16px",
-              cursor: "pointer",
-              borderBottom:
-                activeTab === "analysis" ? "3px solid #007bff" : "none",
-              fontWeight: activeTab === "analysis" ? "bold" : "normal",
-              background: "none",
-              border: "none",
+              marginBottom: "10px",
+              textAlign: "right",
+              width: "500px",
+              margin: "0 auto",
             }}
           >
-            ChatGPT Analysis
-          </button>
+            <button
+              onClick={() => setShowMarkdown((prev) => !prev)}
+              style={{
+                padding: "4px 12px",
+                fontSize: "14px",
+                borderRadius: "4px",
+                border: "1px solid #ccc",
+                background: showMarkdown ? "#e6f0ff" : "#f6f6f6",
+                cursor: "pointer",
+                marginBottom: "10px",
+              }}
+            >
+              {showMarkdown ? "Show Plain Text" : "Show Markdown"}
+            </button>
+          </div>
+
+          {/* Tab Content */}
+          <div
+            style={{
+              whiteSpace: "pre-wrap",
+              background: "#f6f6f6",
+              padding: "10px",
+              borderRadius: "5px",
+              minHeight: "120px",
+              maxHeight: "400px",
+              overflowY: "auto",
+              textAlign: "left",
+              width: "500px",
+              margin: "0 auto",
+            }}
+          >
+            {activeTab === "extracted" ? (
+              extractedText
+            ) : showMarkdown ? (
+              <ReactMarkdown>{formatAnalysis(analysis)}</ReactMarkdown>
+            ) : (
+              <pre style={{ margin: 0 }}>{analysis}</pre>
+            )}
+          </div>
         </div>
-
-        {/* Tab Content */}
-        {activeTab === "extracted" && (
-          <div
-            style={{
-              whiteSpace: "pre-wrap",
-              background: "#f6f6f6",
-              padding: "10px",
-              borderRadius: "5px",
-              minHeight: "120px",
-              maxHeight: "400px",
-              overflowY: "auto",
-              textAlign: "left",
-              width: "500px",
-              margin: "0 auto",
-            }}
-          >
-            {extractedText}
-          </div>
-        )}
-
-        {activeTab === "analysis" && (
-          <div
-            style={{
-              whiteSpace: "pre-wrap",
-              background: "#f6f6f6",
-              padding: "10px",
-              borderRadius: "5px",
-              minHeight: "120px",
-              maxHeight: "400px",
-              overflowY: "auto",
-              textAlign: "left",
-              width: "500px",
-              margin: "0 auto",
-            }}
-          >
-            {analysis}
-          </div>
-        )}
       </div>
     </div>
   );
